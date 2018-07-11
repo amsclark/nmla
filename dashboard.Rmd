@@ -1,0 +1,588 @@
+---
+title: "NMLA Grant Progress Dashboard"
+runtime: shiny
+output:
+  flexdashboard::flex_dashboard:
+    theme: lumen
+    vertical_layout: scroll
+---
+
+<style>
+
+.section.sidebar {
+  background-color: #A6B2FC;
+}
+
+.navbar-inverse .navbar-nav > .active > a,
+.navbar-inverse .navbar-nav > .active > a:hover,
+.navbar-inverse .navbar-nav > .active > a:focus {
+  color: #555;
+  background-color: #A6B2FC;
+}
+
+</style>
+
+```{r global, include = FALSE }
+user_dat <- readRDS("user_dat.rds")
+case_dat <- readRDS("case_dat.rds")
+```
+
+
+```{r setup, include=FALSE}
+library(flexdashboard)
+library(shiny)
+library(DT)
+library(dplyr)
+library(shinyjs)
+library(ggplot2)
+library(plotly) 
+library(crosstalk)
+
+jscode <- "shinyjs.refresh = function() { history.go(0); }"
+
+source('password_auth.R')
+
+categories <- unique(na.omit(case_dat$category_desc))
+funding <- unique(na.omit(case_dat$funding_desc))
+status <- unique(na.omit(case_dat$status_desc))
+problem <- unique(na.omit(case_dat$problem_desc))
+close_code <- unique(na.omit(case_dat$close_code_desc))
+user_ids <- unique(na.omit(case_dat$user_id)) 
+case_nums <- unique(na.omit(case_dat$number))
+```
+
+
+```{r login}
+USER <- reactiveValues(Logged = FALSE)
+
+authenticate_pw <- function() {
+  if(!is.null(input$userName) && !is.null(input$passwd)) {
+      pw <- isolate(digest::sha1(input$passwd))
+      username <- isolate(input$userName)
+      result <- isolate(authenticate(username, pw, user_dat))
+  }
+}
+
+
+output$login_message <- renderText({
+  if(input$Login != 0 && USER$Logged == FALSE){
+  return("Wrong username and/or password! Please try again")
+  }
+  else if (input$Login != 0 && USER$Logged == TRUE){
+    return("")
+  }
+  })
+
+observe({
+  if(input$Login == 0 || is.null(input$Login)) {
+    return()
+  }
+
+  isolate({
+    result <- authenticate_pw()
+        if (result["status"] == "Ok") {
+          USER$Logged <- TRUE
+          USER$Role <- result["user_role"]
+        }
+  })
+})
+
+
+login_filter <- reactive({
+  result <- authenticate_pw()
+        if (result["status"] == "Ok" && USER$Logged == TRUE) {
+          auth_vec <- get_row_vector(result["user_id"], result["user_role"], case_dat)
+          case_dat <- case_dat[auth_vec,]
+        }
+})
+
+sidebar_filter <- reactive({
+  dat <- login_filter()
+  if(!is.null(dat)){
+    if(!is.null(input$users)){
+      dat <- dat %>% filter(user_id %in% input$users)
+    }
+     if(!is.null(input$case_nums)){
+      dat <- dat %>% filter(number %in% input$case_nums)
+    }
+    
+    if(!is.null(input$category)){
+      dat <- dat %>% filter(type == "NONCASE", category_desc %in% input$category)
+    }
+    if(!is.null(input$funding)){
+      dat <- dat %>% filter(funding_desc %in% input$funding)
+    }
+    if(!is.null(input$status)){
+      dat <- dat %>% filter(type == "CASE", status_desc %in% input$status)
+    }
+    if(!is.null(input$problem)){
+      dat <- dat %>% filter(type == "CASE",problem_desc %in% input$problem)
+    }
+     if(!is.null(input$closecode)){
+      dat <- dat %>% filter(type == "CASE", close_code_desc %in% input$closecode)
+    }
+    
+      dat <- dat %>% 
+        filter((act_date >= input$date_range[1] & act_date <= input$date_range[2]))
+
+  }
+  
+})
+
+output$date_range_ui = renderUI({
+    dateRangeInput("date_range", "Case Date Range:", start = lubridate::now() - lubridate::ddays(30), end = lubridate::now())
+})
+
+
+
+```
+
+
+Sidebar {.sidebar}
+=====================================
+
+
+```{r inputs}
+#filters by: activity_date (date range)
+shinyjs::useShinyjs(rmd = TRUE)
+extendShinyjs(text = jscode)
+
+div(id = "sidebar",
+selectizeInput("users", "Filter by User ID", c("Choose multiple    " = "", as.character(user_ids)), multiple=TRUE),
+# selectizeInput("case_nums", "Filter by Case #", c("Choose multiple    " = "", as.character(case_nums)), multiple=TRUE),
+uiOutput("date_range_ui"),
+selectizeInput("category", "Filter by Category", c("Choose multiple    " = "",
+                                as.character(categories)), multiple=TRUE),
+selectizeInput("funding", "Filter by Funding Type", c("Choose multiple    " = "", as.character(funding)), multiple=TRUE),
+selectizeInput("status", "Filter by Status", c("Choose multiple    " = "", as.character(status)), multiple=TRUE),
+selectizeInput("problem", "Filter by Problem", c("Choose multiple    " = "", as.character(problem)), multiple=TRUE),
+selectizeInput("closecode", "Filter by Close Code", c("Choose multiple    " = "", as.character(close_code)), multiple=TRUE)
+)
+
+br()
+actionButton("reset", "Reset", style="margin:15px 0 0 0;")
+
+
+observeEvent(input$reset , {
+  shinyjs::reset("sidebar")
+  # updateSelectizeInput(session, "case_nums", "Filter by Case #",c("Choose multiple    " = "", as.character(case_nums)), server = TRUE)
+})
+```
+
+
+Home
+========================================
+
+The JusticeHub Grants Management Dashboard gives frontline legal aid case handlers direct access to user-friendly data tools that will let them know at a glance whether they are on track to meet key deliverables for grants or projects they are assigned to. For legal aid managers, the Dashboard offers additional tools that let them also easily review case and grant data for individual staff or for multiple case handlers on their teams. The JusticeHub Grants Management Dashboard is a powerful tool to help maximize grant revenue, balance workloads, and achieve more successful outcomes. The Dashboard needs only minimal training to use – no data geek experience required!
+
+Column
+-----------
+
+```{r}
+shinyjs::useShinyjs(rmd = TRUE)
+extendShinyjs(text = jscode)
+
+
+br()
+
+div(id = "login", style = "width: 350px;margin-left: auto;
+    margin-right: auto;" ,
+                    wellPanel(style = "background-color: #FAD495",textInput("userName", "Username"),
+                    passwordInput("passwd", "Password"),
+                    br(),actionButton("Login", "Log in")))
+
+br()
+
+div(
+  style = "width: 350px;margin-left: auto;
+    margin-right: auto;",
+textOutput("login_message")
+
+)
+
+div(
+conditionalPanel("output.login_message == ''",div(id = "login", style = "width: 350px;margin-left: auto;
+    margin-right: auto;",uiOutput("userPanel")  
+                    )),
+br(),
+br(),
+br(),
+br(),
+img(src= 'NMLA_logo.png', style="display: block; margin-left: auto; margin-right: auto;")
+)
+output$userPanel <- renderUI({
+  if(USER$Logged == TRUE){
+    fluidRow(
+      column(10,
+             paste("Welcome,", input$userName, "!")
+      ),
+      br(),
+      br(),
+      column(1, actionLink("logout", "Logout"))
+    )
+  }
+})
+
+
+observe({
+  if(USER$Logged == TRUE){
+    shinyjs::hide("login")
+  } else if (USER$Logged == FALSE){
+    shinyjs::show("login")
+  }
+  
+})
+
+observeEvent(input$logout, {
+  js$refresh();
+})
+
+```
+
+Case Analytics{data-orientation=rows data-navmenu="Analytics"}
+=======================================
+
+Row
+---------------------------------------
+```{r value boxes}
+
+div(style="width:50%; float:left;",
+                       div(id="stats",
+                           class="section level3 value-box bg-primary",
+                           style="flex:576 576 0px; background: orange; color:white",
+                        div(class="inner",
+                           p(class="value")),
+                            valueBoxOutput("num_cases")))
+
+div(style="width:50%; float:left;",
+                       div(id="stats",
+                           class="section level3 value-box bg-primary",
+                           style="flex:576 576 0px; background: #A6B2FC; color:white",
+                        div(class="inner",
+                           p(class="value")),
+                            valueBoxOutput("num_users")))
+```
+
+Row {.tabset data-height=650}
+-------------------------------------
+
+###Hours per Case
+
+```{r}
+observe({
+ dat <- sidebar_filter()
+ print(dat)
+ 
+ if(!is.null(dat)){
+  user_df <- dat %>%
+         filter(type == "CASE") %>%
+         mutate(`Case Status` = ifelse(!is.na(close_code_desc), "Closed", "Open")) %>%
+         group_by(number,`Case Status`, user_id)%>%
+         summarise(user_hours = sum(hours, na.rm = TRUE)) %>%
+         as.data.frame()
+  
+   total_df <- user_df %>%
+               group_by(number,`Case Status`) %>%
+              summarise(total_hours = sum(user_hours, na.rm = TRUE)) %>%
+              as.data.frame()
+   
+   # number_of_cases <- length(unique(total_df$number))
+   
+   users_total_hrs <- dat %>%
+         filter(type == "CASE") %>%
+         mutate(`Case Status` = ifelse(!is.na(close_code_desc), "Closed", "Open")) %>%
+         group_by(user_id)%>%
+         summarise(hours = sum(hours, na.rm = TRUE)) %>%
+         as.data.frame()
+
+  filteredTable_selected <- reactive({
+    ids <- input$dat_rows_selected
+    user_df[ids,]
+  })
+  
+  output$table_select <- renderPlotly({ 
+    p <- ggplot(filteredTable_selected(), aes(x = user_id , y = user_hours, fill = number)) + 
+          geom_col() +
+          xlab("Case Number") +
+          ylab("Hours") + 
+          scale_fill_brewer(palette = "PuOr")
+
+    p <- ggplotly(p)
+  })
+
+    output$case0 <- 
+      renderPlotly({
+        if(input$radio == 1) {
+          p <- ggplot(total_df, aes(x = number , y = total_hours, fill = `Case Status`)) + 
+         geom_col() +
+         ggtitle("Hours per Case") +
+          xlab("Case Number") +
+          ylab("Hours") + 
+         theme_minimal() +
+         #theme(axis.text.x = element_blank()) +
+         scale_fill_manual(values = c("orange", "#060C53")) +
+        scale_x_discrete(labels = paste(c(1:length(unique(total_df$number)))))
+         
+        }
+        else if(input$radio == 2) {
+          total_df$number <- factor(total_df$number, levels = unique(total_df$number)[order(total_df$total_hours, decreasing = TRUE)])
+
+            p <- ggplot(total_df, aes(x = number, y = total_hours, fill = `Case Status`)) +
+         geom_col() +
+         xlab("Case Number") +
+         ylab("Hours per Case") +
+         theme_minimal() +
+         theme(axis.text.x = element_blank()) +
+         scale_fill_manual(values = c("orange", "#060C53"))
+
+        }
+  p <- ggplotly(p)
+})
+
+output$user_hrs <-  renderPlotly({
+users_total_hrs$user_id <- factor(users_total_hrs$user_id, levels = unique(users_total_hrs$user_id)[order(users_total_hrs$hours, decreasing = TRUE)])
+
+  p <- ggplot(users_total_hrs, aes(x = user_id , y = hours)) + 
+         geom_col(fill = "orange") +
+         #ggtitle("User Hours") +
+         theme_minimal() +
+         theme(axis.text.x = element_text(angle = 45, hjust = 1))+
+         #theme(axis.text.x = element_blank()) +
+         xlab("User ID") +
+         ylab("Hours")
+         #scale_fill_manual(values = c("orange", "#060C53"))
+  p <- ggplotly(p) 
+})
+    
+output$dat <- DT::renderDataTable({
+    DT::datatable(user_df[,c("number", "user_id", "user_hours")],
+                  selection = list(mode = "multiple"),
+                  colnames = c("Case Number", "User ID", "Hours"),
+                  rownames = FALSE,
+                  options = list(
+                      deferRender = TRUE,
+                      fixedColumns = TRUE,
+                      scrollY = 300,
+                      paging = FALSE,
+                      scrollCollapse = TRUE,
+                      dom = 't'
+                    )
+                  )})
+
+output$dat2 <- DT::renderDataTable({
+    DT::datatable(filteredTable_selected(),
+                  selection = list(mode = "multiple"),
+                  rownames = FALSE,
+                  options = list(
+                      deferRender = TRUE,
+                      fixedColumns = TRUE,
+                      scrollY = 300,
+                      paging = FALSE,
+                      scrollCollapse = TRUE,
+                      dom = 't'
+                    )
+                  )})
+
+ dat <- sidebar_filter()
+output$num_cases<- 
+    renderValueBox({
+        valueBox(length(unique(na.omit(dat$number))),
+                caption = "Number of Cases")
+    })
+
+output$num_users<- 
+    renderValueBox({
+        valueBox(length(unique(na.omit(dat$user_id))),
+                caption = "Number of Users")
+    })
+}
+})
+ 
+
+ fixedRow(
+    column(3,  radioButtons("radio", h5("Sort by:"),
+      choices = list("Number" = 1, "Hours" = 2),selected = 1)))
+
+    htmltools::div(style = "width: 1000px; float:left", plotlyOutput("case0", width = "1000px"))
+```
+
+###Number of Hours per User
+```{r}
+plotlyOutput("user_hrs", width = "1000px")
+```
+
+Row
+-------------------------------------
+
+###
+
+```{r}
+DT::dataTableOutput('dat')
+```
+
+
+###
+
+```{r}
+plotlyOutput('table_select')
+```
+
+
+Row
+-------------------------------------
+
+###
+```{r}
+
+##aggregates funding type and number of entries
+observe({
+ dat <- sidebar_filter()
+ if(!is.null(dat)){
+  df <- dat %>%
+         filter(type == "CASE") %>%
+         group_by(funding, funding_desc) %>%
+         mutate(hours_by_funding = sum(hours, na.rm = TRUE)) %>%
+         mutate(aver = hours_by_funding/length(unique(number))) %>%
+         select(funding,funding_desc, aver) %>%
+         group_by(funding) %>%
+         slice(1:1)
+  
+  
+    output$case2 <- renderPlotly({
+    p <- ggplot(df, aes(x =  funding, y = aver)) +
+         geom_col(fill = "orange")+
+         ggtitle("Total Average Case Hours by Funding Type") +
+         xlab("Funding Type") +
+         ylab("Hours") +
+         theme_minimal() +
+         theme(legend.position="none") +
+         scale_fill_brewer(palette="Oranges") + 
+         theme(axis.text.x = element_text(angle = 45, hjust = 1))
+    
+    p <- ggplotly(p)
+})
+}
+})
+
+plotlyOutput('case2')
+```
+
+Non-Case Analytics{data-navmenu="Analytics"}
+=======================================
+
+Column{vertical_layout: fill}
+---------------------------------
+
+### Number of Non-Cases by Category
+
+```{r}
+observe({
+ dat <- sidebar_filter()
+ if(!is.null(dat)){
+  df <- dat %>%
+         filter(type == "NONCASE") %>%
+         group_by(category)%>%
+         summarise(frequency = n())
+    output$plot0 <- renderPlotly({
+    p <- ggplot(df, aes(x = category, y = frequency)) + 
+         geom_col(fill = "orange") +
+         #ggtitle("Non-Case Frequency by Category") +
+         theme_minimal() +
+         xlab("Non-Case Category") +
+         ylab("Number of Non-Cases") + 
+         theme(axis.text.x = element_text(angle = 45, hjust = 1))
+         
+   p <- ggplotly(p)
+})#, height=400, width = 500)
+}
+})
+ 
+plotlyOutput('plot0')  
+```
+
+
+### Number of Non-Cases by Funding Type
+
+
+```{r}
+observe({
+ dat <- sidebar_filter()
+ if(!is.null(dat)){
+  df <- dat %>%
+         filter(type == "NONCASE") %>%
+         group_by(funding)%>%
+         summarise(frequency = n())
+    output$plot1 <- renderPlotly({
+    p <- ggplot(df, aes(x = funding, y = frequency)) + 
+         geom_col(fill = "orange") +
+         #ggtitle("Non-Case Frequency by Funding Type") +
+         theme_minimal() +
+         xlab("Non-Case Funding Type") +
+         ylab("Number of Non-Cases") + 
+         theme(axis.text.x = element_text(angle = 45, hjust = 1))
+         
+    p <- ggplotly(p)
+})#, height=400, width = 500)
+}
+})
+ 
+plotlyOutput('plot1')      
+```
+
+
+Column{vertical_layout: fill}
+----------------------------------
+
+### Number of  Hours Spent by Category
+
+```{r}
+observe({
+ dat <- sidebar_filter()
+ if(!is.null(dat)){
+  df <- dat %>%
+         filter(type == "NONCASE") %>%
+         group_by(category)%>%
+         summarise(hours = sum(hours, na.rm = TRUE))
+    output$plot2 <- renderPlotly({
+    p <- ggplot(df, aes(x = category, y = hours)) + 
+         geom_col(fill = "orange") +
+         #ggtitle("No. Hours Spent Per Category") +
+         theme_minimal() + 
+         xlab("Non-Case Category") +
+         ylab("Hours") + 
+         theme(axis.text.x = element_text(angle = 45, hjust = 1))
+         
+    p <- ggplotly(p)
+})#, height=400, width = 500)
+}
+})
+ 
+plotlyOutput('plot2')   
+```
+
+### Number of Hours Spent by Funding Type
+
+```{r}
+observe({
+ dat <- sidebar_filter()
+ if(!is.null(dat)){
+  df <- dat %>%
+         filter(type == "NONCASE") %>%
+         group_by(funding)%>%
+         summarise(hours = sum(hours, na.rm = TRUE))
+    output$plot3 <- renderPlotly({
+    p <- ggplot(df, aes(x = funding, y = hours)) + 
+         geom_col(fill = "orange") +
+         #ggtitle("No. Hours Spent Per Funding Type") +
+         theme_minimal()+
+         xlab("Non-Case Funding Type") +
+         ylab("Hours") +
+         theme(axis.text.x = element_text(angle = 45, hjust = 1))
+         
+    p <- ggplotly(p)
+})#, height=400, width = 500)
+}
+})
+ 
+plotlyOutput('plot3')  
+```
